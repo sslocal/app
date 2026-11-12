@@ -1,5 +1,5 @@
 /* SS Local - fonctionnement hors ligne. Changer VERSION a chaque mise a jour de l'app. */
-const VERSION='sslocal-v11';
+const VERSION='sslocal-v12';
 const ASSETS=['./','./index.html','./manifest.webmanifest','./icons/icon-180.png','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-maskable-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(VERSION).then(c=>c.addAll(ASSETS))));
 self.addEventListener('activate',e=>e.waitUntil(

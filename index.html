@@ -394,7 +394,7 @@ td.n,th.n{text-align:right}
 </div></div>
 <div id="gate"><div class="box">
   <div class="glogo" id="gateLogo">🛍️</div><h2 id="gateShop">SS Local</h2>
-  <p class="mut" style="margin:0">🔒 Connectez-vous avec un compte Google autorisé par le propriétaire.</p>
+  <p class="mut" style="margin:0">🔒 Connectez-vous avec le compte Google de SS Local.</p>
   <button class="b p" id="gateBtn" style="width:100%;margin-top:18px;padding:14px;font-size:16px" onclick="syncConnect()">Se connecter avec Google</button>
   <button class="b" id="gateOff" hidden style="width:100%;margin-top:10px" onclick="gateOffline()">📴 Continuer hors ligne</button>
   <button class="b r" id="gateCreate" hidden style="width:100%;margin-top:10px" onclick="gateCreateBase()">Créer une nouvelle base (propriétaire seulement)</button>
@@ -975,7 +975,7 @@ document.addEventListener('click',e=>{if(gateOn())return;if(!$('#tab-caisse').hi
 
 /* ===================== Synchronisation Google Drive ===================== */
 const GCID='567331161566-dl677ns9b3cvjlo0lm3to9papvasuonr.apps.googleusercontent.com';
-const GSCOPE='https://www.googleapis.com/auth/drive'; /* v11 : necessaire pour ouvrir le fichier partage par le proprietaire */
+const GSCOPE='https://www.googleapis.com/auth/drive.file'; /* v12 : acces limite au fichier de l'app, compte SS Local uniquement */
 const GFILE='SSLocal-data.json',GAPI='https://www.googleapis.com/drive/v3',GUPL='https://www.googleapis.com/upload/drive/v3';
 const LOCAL_ONLY=['instant','lastSaleId'];           /* reglages propres a chaque appareil */
 const RANK={pending:0,confirmed:1,delivered:2};
@@ -1005,6 +1005,7 @@ function mergeDB(L,R){
   const sL=forDrive(L).settings,sR=forDrive(R).settings,w=newer(sL,sR),S={...w};
   S.pinHash=w.pinHash||sL.pinHash||sR.pinHash||undefined;if(!S.pinHash)delete S.pinHash;
   S.lastBackup=Math.max(sL.lastBackup||0,sR.lastBackup||0);
+  S.ownerEmail=sL.ownerEmail||sR.ownerEmail||undefined;if(!S.ownerEmail)delete S.ownerEmail;
   S.nextSale=Math.max(sL.nextSale||1,sR.nextSale||1,1+sales.reduce((m,x)=>Math.max(m,x.no||0),0));
   S.nextOrder=Math.max(sL.nextOrder||1,sR.nextOrder||1,1+orders.reduce((m,x)=>Math.max(m,x.no||0),0));
   LOCAL_ONLY.forEach(k=>{if(L.settings[k]!==undefined)S[k]=L.settings[k];});
@@ -1066,7 +1067,8 @@ async function syncNow(interactive=false){
   try{
     let meta=SY.fileId?await dMeta(SY.fileId,interactive):null;
     if(meta&&meta.trashed)meta=null;
-    if(!meta){meta=await dFind(interactive);if(meta){SY.fileId=meta.id;SY.version=null;}}
+    if(meta&&meta.ownedByMe===false)throw {type:'notowner'};
+    if(!meta){meta=await dFind(interactive);if(meta){if(meta.ownedByMe===false)throw {type:'notowner'};SY.fileId=meta.id;SY.version=null;}}
     if(!meta){if(!SY.owner)throw {type:'nobase'};                                          /* partage retire : acces bloque */
       const f=await dCreate(interactive);SY.fileId=f.id;await syPush(interactive);}   /* fichier supprime par le proprietaire : on le recree */
     else{
@@ -1084,7 +1086,7 @@ async function syncNow(interactive=false){
     }
     SY.lastSync=Date.now();syPersist();setSy('ok');
   }catch(e){setSy(e.type==='offline'?'offline':e.type==='auth'?'auth':'err',e);
-    if(e.type==='nobase')gateShow("⛔ L'accès à la base SS Local a été retiré pour ce compte.",true);}
+    if(e.type==='nobase'||e.type==='notowner'){if(e.type==='notowner')denyAccount();gateShow(errText(e),true);}}
   finally{syBusy=false;if(syAgain){syAgain=false;syncSoon(800);}}
 }
 function syncSoon(ms=3000){if(!SY.linked)return;clearTimeout(syTimer);syTimer=setTimeout(()=>syncNow(false),ms);}
@@ -1109,11 +1111,17 @@ function errText(e){
   if(!e)return 'Erreur inconnue';
   if(e.type==='offline')return 'Pas de connexion Internet.';
   if(e.type==='scope')return "Cochez la case d'accès à Google Drive sur la page de Google, puis réessayez.";
-  if(e.type==='auth')return "Connexion refusée ou annulée. Ce compte doit être autorisé par le propriétaire.";
-  if(e.type==='nobase')return "⛔ Aucune base SS Local n'est partagée avec ce compte.";
+  if(e.type==='auth')return "Connexion refusée ou annulée.";
+  if(e.type==='nobase')return "⛔ Aucune base SS Local trouvée pour ce compte.";
+  if(e.type==='notowner')return "⛔ Compte non autorisé. Seul le compte Google de SS Local peut se connecter.";
   if(e.type==='http'&&(e.status===403||e.status===404))return "Accès refusé : la base doit être partagée avec ce compte.";
   return 'Erreur Google'+(e.status?' ('+e.status+')':'')+'. Réessayez.';
 }
+function denyAccount(){                       /* compte etranger : on oublie son jeton immediatement */
+  try{if(SY.token&&window.google)google.accounts.oauth2.revoke(SY.token,()=>{});}catch(e){}
+  const keep=SY.linked&&SY.ownerOk;SY.token=null;SY.exp=0;if(!keep){SY.email='';}syPersist();
+}
+const ownerEmail=()=>(db.settings.ownerEmail||'').toLowerCase();
 async function syncConnect(){
   if(!navigator.onLine){gateMsg('Pas de connexion Internet.',true);return toast('Connexion Internet requise','err');}
   syBusy=true;setSy('busy');gateMsg('Connexion en cours…');$('#gateBtn').disabled=true;$('#gateCreate').hidden=true;
@@ -1124,12 +1132,17 @@ async function syncConnect(){
     let f=null;
     if(SY.linked&&SY.fileId){f=await dMeta(SY.fileId,true);if(f&&f.trashed)f=null;}
     if(!f)f=await dFind(true);
-    if(!f){syBusy=false;setSy('off');syPersist();
-      gateMsg(`⛔ Aucune base SS Local n'est partagée avec ${esc(SY.email)}. Demandez au propriétaire de partager le fichier ${GFILE} avec ce compte.`,true);
-      $('#gateCreate').hidden=false;return;}
-    SY.owner=!!f.ownedByMe;
+    const em=(SY.email||'').toLowerCase();
+    if(ownerEmail()&&em!==ownerEmail())throw {type:'notowner'};
+    if(!f){
+      if(ownerEmail()&&em===ownerEmail()){syBusy=false;setSy('off');syPersist();   /* compte SS Local, fichier supprime */
+        gateMsg(`Aucun fichier ${GFILE} sur le Drive de ${esc(SY.email)}.`,true);$('#gateCreate').hidden=false;return;}
+      throw {type:'notowner'};}
+    if(!f.ownedByMe)throw {type:'notowner'};
+    SY.owner=true;
     if(SY.linked&&SY.fileId===f.id){                     /* appareil deja relie : simple reconnexion */
       syPersist();syBusy=false;await syncNow(true);
+      if(!db.settings.ownerEmail){db.settings.ownerEmail=em;db.settings.updated=Date.now();save();}
       if(syState==='ok'){gateHide();toast('Connecté ✅');}else gateMsg(errText({type:syState==='offline'?'offline':'http'}),true);
       return;}
     /* rejoindre la base partagee (les donnees locales eventuelles sont gardees en copie de securite sur l'appareil) */
@@ -1137,16 +1150,22 @@ async function syncConnect(){
     const txt=await dRead(f.id,true);let R=null;try{R=JSON.parse(txt);}catch(e){}
     SY.fileId=f.id;
     if(R&&Array.isArray(R.products)){
-      R=migrate(R);const keep={};LOCAL_ONLY.forEach(k=>keep[k]=db.settings[k]);db=R;LOCAL_ONLY.forEach(k=>{if(keep[k]!==undefined)db.settings[k]=keep[k];});
+      R=migrate(R);
+      if(R.settings.ownerEmail&&R.settings.ownerEmail.toLowerCase()!==em)throw {type:'notowner'};
+      const keep={};LOCAL_ONLY.forEach(k=>keep[k]=db.settings[k]);db=R;LOCAL_ONLY.forEach(k=>{if(keep[k]!==undefined)db.settings[k]=keep[k];});
       SY.version=String((await dMeta(f.id,true)).version);storeDb();
     }else if(SY.owner){await syPush(true);}
     else throw {type:'nobase'};
-    cart=[];SY.linked=true;SY.lastSync=Date.now();syPersist();syBusy=false;setSy('ok');syRefreshUI();gateHide();toast('Connecté à la base SS Local ✅');
-  }catch(e){syBusy=false;setSy(e.type==='offline'?'offline':e.type==='auth'||e.type==='scope'?'auth':'err',e);gateMsg(errText(e),true);
+    if(!db.settings.ownerEmail){db.settings.ownerEmail=em;db.settings.updated=Date.now();storeDb();syDirty=true;}
+    cart=[];SY.linked=true;SY.ownerOk=true;SY.lastSync=Date.now();syPersist();syBusy=false;setSy('ok');syRefreshUI();gateHide();toast('Connecté à la base SS Local ✅');
+    if(syDirty)syncSoon(300);
+  }catch(e){if(e.type==='notowner')denyAccount();
+    syBusy=false;setSy(e.type==='offline'?'offline':e.type==='auth'||e.type==='scope'||e.type==='notowner'?'auth':'err',e);gateMsg(errText(e),true);
     if($('#gate').style.display!=='flex')toast(errText(e),'err');}
   finally{syBusy=false;$('#gateBtn').disabled=false;}
 }
 function gateCreateBase(){
+  if(!ownerEmail()||(SY.email||'').toLowerCase()!==ownerEmail())return gateMsg(errText({type:'notowner'}),true);
   appConfirm({icon:'⚠️',title:'Créer une nouvelle base ?',yes:'Créer la base',yesCls:'r',
     body:`<div class="warn">À faire <b>seulement par le propriétaire</b>, une seule fois. Les données de cet appareil deviendront la base partagée, dans le Google Drive de <b>${esc(SY.email)}</b>.</div>`},async()=>{
     syBusy=true;setSy('busy');gateMsg('Création…');
@@ -1190,7 +1209,7 @@ function setSy(st,e){
 }
 function syRender(){
   const on=SY.linked;
-  $('#syncInfo').innerHTML=on?`Connecté : <b>${esc(SY.email||'compte Google')}</b> · fichier <b>${GFILE}</b> sur votre Google Drive<br>Dernière synchro : <b>${ago(SY.lastSync)}</b>${syState==='auth'?' · <b style="color:#b91c1c">reconnexion requise</b>':''}${syDirty&&on?' · modifications en attente d\'envoi':''}`
+  $('#syncInfo').innerHTML=on?`Connecté : <b>${esc(SY.email||'compte Google')}</b> 🔒 seul compte autorisé · fichier <b>${GFILE}</b> sur votre Google Drive<br>Dernière synchro : <b>${ago(SY.lastSync)}</b>${syState==='auth'?' · <b style="color:#b91c1c">reconnexion requise</b>':''}${syDirty&&on?' · modifications en attente d\'envoi':''}`
     :`Non connecté. Connectez le <b>compte Google de la boutique</b> pour que tous vos appareils (ordinateur, téléphone, tablette) partagent les mêmes données.`;
   $('#syncLogin').hidden=on;$('#syncNowBtn').hidden=!on;$('#syncOut').hidden=!on;
 }
