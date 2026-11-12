@@ -120,6 +120,9 @@ td.n,th.n{text-align:right}
 #amBody .ln{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--bd)}
 #amBody .tot{display:flex;justify-content:space-between;font-size:20px;font-weight:800;margin-top:10px}
 #amBody .warn{background:#fef3c7;color:#92400e;border-radius:10px;padding:8px 10px;margin-top:10px;font-size:13px}
+#syncPill{margin-top:auto;font:600 12px/1.3 inherit;font-family:inherit;color:#94a3b8;background:#1e293b;border:0;border-radius:10px;padding:9px 12px;text-align:left;cursor:pointer}
+#syncPill.ok{color:#6ee7b7}#syncPill.busy{color:#a5b4fc}#syncPill.offline{color:#fcd34d}#syncPill.auth,#syncPill.err{color:#fca5a5;background:#3b1d24}
+@media(max-width:800px){#syncPill{margin-top:0}}
 #amBody .info{background:#eef2ff;color:#3730a3;border-radius:10px;padding:8px 10px;margin-top:10px;font-size:13px}
 @keyframes pop{from{transform:scale(.92);opacity:0}to{transform:scale(1);opacity:1}}
 #pinMsg{color:var(--err);font-size:13px;min-height:18px}
@@ -153,6 +156,7 @@ td.n,th.n{text-align:right}
     <button data-tab="ventes">📊 Ventes</button>
     <button data-tab="params">⚙️ Paramètres</button>
   </nav>
+  <button id="syncPill" hidden onclick="syPillClick()"></button>
 </header>
 
 <main>
@@ -352,6 +356,13 @@ td.n,th.n{text-align:right}
       <label class="b" style="display:inline-block">📁 Choisir une image<input type="file" id="logoFile2" accept="image/*" hidden></label>
       <button class="b r" id="logoRm" onclick="setLogo(null)">Retirer</button></div>
     </div></div>
+  <div class="card" id="syncCard"><h2>☁️ Synchronisation Google Drive</h2>
+    <p class="mut" id="syncInfo" style="margin-top:0"></p>
+    <div class="row">
+      <button class="b p" id="syncLogin" onclick="syncConnect()">Se connecter avec Google</button>
+      <button class="b" id="syncNowBtn" onclick="syncConnectOrNow()">🔄 Synchroniser maintenant</button>
+      <button class="b r" id="syncOut" onclick="syncDisconnect()">Se déconnecter</button>
+    </div></div>
   <div class="card"><h2>Sauvegarde / transfert vers un autre ordinateur</h2>
     <p class="mut">Les données sont enregistrées dans le navigateur de cet ordinateur. Exportez une sauvegarde régulièrement (clé USB, OneDrive…) et importez-la sur un autre ordinateur.</p>
     <div class="row">
@@ -416,6 +427,7 @@ function migrate(d){
   d.settings.updated=d.settings.updated||t;
   if(!Array.isArray(d.moves)){ /* journal de stock : le stock actuel devient le point de depart */
     d.moves=d.products.map(p=>({id:uid(),pid:p.id,d:p.qty,ts:t,why:'init',dev:DEVICE}));}
+  d.gen=d.gen||'g0';d.genTs=d.genTs||0;
   d.schema=SCHEMA;return d;
 }
 async function load(){
@@ -430,10 +442,11 @@ function save(){
   if(!store.ok)return true;
   store.set(KEY,JSON.stringify(db)).then(()=>{if(saveErr){saveErr=false;toast('Enregistrement rétabli');}bc&&bc.postMessage('changed');})
     .catch(e=>{saveErr=true;alert("Erreur d'enregistrement : "+(e&&e.name||e)+"\nExportez une sauvegarde par précaution.");});
+  syDirty=true;syncSoon();
   return true;
 }
 /* Toute variation de stock passe ici : stock + journal date */
-function adj(p,delta,why){if(!p||!delta)return;p.qty+=delta;p.updated=Date.now();db.moves.push({id:uid(),pid:p.id,d:delta,ts:p.updated,why,dev:DEVICE});}
+function adj(p,delta,why){if(!p||!delta)return;p.qty+=delta;db.moves.push({id:uid(),pid:p.id,d:delta,ts:Date.now(),why,dev:DEVICE});}
 function tomb(id){db.deleted[id]=Date.now();}
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const getP=id=>db.products.find(p=>p.id===id);
@@ -819,7 +832,7 @@ function exportCSV(){
 
 /* ===================== Parametres ===================== */
 function renderParams(){
-  header();$('#setShop').value=db.settings.shop;$('#setLow').value=db.settings.lowStock;
+  syRender();header();$('#setShop').value=db.settings.shop;$('#setLow').value=db.settings.lowStock;
   const L=db.settings.logo,box=$('#logoBox');box.querySelector('span,img')?.remove();
   box.insertAdjacentHTML('afterbegin',L?`<img src="${L}" alt="">`:'<span>+ Ajouter<br>un logo</span>');$('#logoRm').hidden=!L;
   $('#backupInfo').textContent='Dernière sauvegarde : '+(db.settings.lastBackup?fmtDate(db.settings.lastBackup):'jamais');
@@ -835,7 +848,7 @@ $('#importFile').onchange=e=>{
   const f=e.target.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{try{const d=JSON.parse(rd.result);if(!Array.isArray(d.products)||!Array.isArray(d.sales))throw 0;
     if(!confirm(`Importer ${d.products.length} produits et ${d.sales.length} ventes ?\nLes données actuelles de cet ordinateur seront REMPLACÉES.`))return;
-    db=migrate(d);cart=[];save();toast('Sauvegarde importée');renderParams();}
+    db=migrate(d);db.gen='g'+uid();db.genTs=Date.now();cart=[];save();toast('Sauvegarde importée');renderParams();}
     catch(err){toast('Fichier de sauvegarde invalide','err');}e.target.value='';};
   rd.readAsText(f);
 };
@@ -869,7 +882,7 @@ function pinAsk(cb){
 function resetAll(){pinAsk(doReset);}
 function doReset(){
   if(!confirm('Effacer TOUS les produits et TOUTES les ventes ?\nCette action est irréversible.'))return;
-  db=migrate({products:[],sales:[],orders:[],settings:{...DEF,shop:db.settings.shop,logo:db.settings.logo,lowStock:db.settings.lowStock,pinHash:db.settings.pinHash}});cart=[];save();renderParams();toast('Données effacées','warn');
+  db=migrate({products:[],sales:[],orders:[],settings:{...DEF,shop:db.settings.shop,logo:db.settings.logo,lowStock:db.settings.lowStock,pinHash:db.settings.pinHash}});db.gen='g'+uid();db.genTs=Date.now();cart=[];save();renderParams();toast('Données effacées','warn');
 }
 
 /* ===================== Camera ===================== */
@@ -963,6 +976,192 @@ async function openCam(cb){
 function closeCam(){camOn=false;if(camStream)camStream.getTracks().forEach(t=>t.stop());camStream=null;$('#cam').style.display='none';}
 
 document.addEventListener('click',e=>{if(!$('#tab-caisse').hidden&&!e.target.closest('input,select,button,label,.tile'))$('#scan').focus();});
+
+/* ===================== Synchronisation Google Drive ===================== */
+const GCID='567331161566-dl677ns9b3cvjlo0lm3to9papvasuonr.apps.googleusercontent.com';
+const GSCOPE='https://www.googleapis.com/auth/drive.file';
+const GFILE='SSLocal-data.json',GAPI='https://www.googleapis.com/drive/v3',GUPL='https://www.googleapis.com/upload/drive/v3';
+const LOCAL_ONLY=['instant','lastSaleId'];           /* reglages propres a chaque appareil */
+const RANK={pending:0,confirmed:1,delivered:2};
+let SY={linked:false,fileId:null,version:null,email:'',lastSync:0,token:null,exp:0};
+let syState='off',syDirty=false,syTimer=null,syBusy=false,syAgain=false,tokClient=null,tokPending=null,syErrMsg='';
+
+function syPersist(){if(store.ok)store.set('sync',JSON.stringify(SY)).catch(()=>{});}
+function storeDb(){if(store.ok)store.set(KEY,JSON.stringify(db)).then(()=>{bc&&bc.postMessage('changed');}).catch(()=>{});}
+function canon(x){if(Array.isArray(x))return '['+x.map(canon).join(',')+']';
+  if(x&&typeof x==='object')return '{'+Object.keys(x).sort().filter(k=>x[k]!==undefined).map(k=>JSON.stringify(k)+':'+canon(x[k])).join(',')+'}';
+  const j=JSON.stringify(x);return j===undefined?'null':j;}
+function forDrive(d){const c={...d,settings:{...d.settings}};LOCAL_ONLY.forEach(k=>delete c.settings[k]);return c;}
+function newer(a,b){const ua=a.updated||0,ub=b.updated||0;if(ua!==ub)return ub>ua?b:a;return canon(b)>canon(a)?b:a;}
+
+/* Fusion de deux bases : rien n'est perdu, la modification la plus recente gagne, le stock est recalcule depuis le journal */
+function mergeDB(L,R){
+  if((L.gen||'g0')!==(R.gen||'g0')){ /* une base a ete importee ou effacee : la plus recente remplace l'autre */
+    const W=(R.genTs||0)>(L.genTs||0)?R:L;if(W===L)return L;
+    const out={...R,settings:{...R.settings}};LOCAL_ONLY.forEach(k=>out.settings[k]=L.settings[k]);return out;}
+  const del={...(R.deleted||{})};for(const k in (L.deleted||{}))del[k]=Math.max(del[k]||0,L.deleted[k]);
+  const ml=(a,b,choose,key)=>{const m=new Map();for(const x of a)m.set(x.id,x);for(const y of b){const x=m.get(y.id);m.set(y.id,x?choose(x,y):y);}
+    return [...m.values()].filter(x=>!del[x.id]).sort((p,q)=>(key(p)-key(q))||(p.id<q.id?-1:p.id>q.id?1:0));};
+  const products=ml(L.products,R.products,newer,p=>p.created||0);
+  const orders=ml(L.orders,R.orders,(a,b)=>{const ra=RANK[a.status]||0,rb=RANK[b.status]||0;return ra!==rb?(rb>ra?b:a):newer(a,b);},o=>o.created||0);
+  const sales=ml(L.sales,R.sales,(a,b)=>(!!a.cancelled!==!!b.cancelled)?(a.cancelled?a:b):newer(a,b),x=>x.date||0);
+  const moves=ml(L.moves,R.moves,a=>a,x=>x.ts||0);
+  const sL=forDrive(L).settings,sR=forDrive(R).settings,w=newer(sL,sR),S={...w};
+  S.pinHash=w.pinHash||sL.pinHash||sR.pinHash||undefined;if(!S.pinHash)delete S.pinHash;
+  S.lastBackup=Math.max(sL.lastBackup||0,sR.lastBackup||0);
+  S.nextSale=Math.max(sL.nextSale||1,sR.nextSale||1,1+sales.reduce((m,x)=>Math.max(m,x.no||0),0));
+  S.nextOrder=Math.max(sL.nextOrder||1,sR.nextOrder||1,1+orders.reduce((m,x)=>Math.max(m,x.no||0),0));
+  LOCAL_ONLY.forEach(k=>{if(L.settings[k]!==undefined)S[k]=L.settings[k];});
+  const q={};for(const mv of moves)q[mv.pid]=(q[mv.pid]||0)+mv.d;
+  const P=products.map(p=>(q[p.id]||0)===p.qty?p:{...p,qty:q[p.id]||0});
+  return {...L,products:P,orders,sales,moves,deleted:del,settings:S,schema:SCHEMA,gen:L.gen,genTs:L.genTs};
+}
+
+/* ---- Connexion Google ---- */
+function loadGis(){return new Promise((res,rej)=>{if(window.google&&google.accounts&&google.accounts.oauth2)return res();
+  const x=document.createElement('script');x.src='https://accounts.google.com/gsi/client';x.async=true;x.onload=()=>res();x.onerror=()=>{x.remove();rej({type:'offline'});};document.head.appendChild(x);});}
+async function getToken(){
+  await loadGis();
+  if(!tokClient)tokClient=google.accounts.oauth2.initTokenClient({client_id:GCID,scope:GSCOPE,
+    callback:r=>{const p=tokPending;tokPending=null;if(!p)return;
+      if(r&&r.access_token){SY.token=r.access_token;SY.exp=Date.now()+((+r.expires_in||3600)-120)*1000;syPersist();p.ok(SY.token);}else p.err({type:'auth',detail:r&&r.error});},
+    error_callback:e=>{const p=tokPending;tokPending=null;if(p)p.err({type:'auth',detail:e&&e.type});}});
+  return new Promise((ok,err)=>{tokPending={ok,err};
+    const o={prompt:SY.email?'':'select_account'};if(SY.email)o.login_hint=SY.email;tokClient.requestAccessToken(o);});
+}
+const tokenValid=()=>SY.token&&Date.now()<SY.exp;
+async function gfetch(url,opt={},interactive=false){
+  if(!tokenValid()){if(!interactive)throw {type:'auth'};await getToken();}
+  const go=()=>fetch(url,{...opt,headers:{...(opt.headers||{}),Authorization:'Bearer '+SY.token}});
+  let res;try{res=await go();}catch(e){throw {type:'offline'};}
+  if(res.status===401){SY.token=null;syPersist();if(!interactive)throw {type:'auth'};await getToken();try{res=await go();}catch(e){throw {type:'offline'};}}
+  if(!res.ok)throw {type:'http',status:res.status,detail:(await res.text().catch(()=>'')).slice(0,200)};
+  return res;
+}
+/* ---- Fichier Drive ---- */
+async function dFind(i){const q=encodeURIComponent(`name='${GFILE}' and trashed=false`);
+  const j=await (await gfetch(`${GAPI}/files?q=${q}&spaces=drive&orderBy=modifiedTime%20desc&fields=files(id,version)`,{},i)).json();return (j.files&&j.files[0])||null;}
+async function dMeta(id,i){try{return await (await gfetch(`${GAPI}/files/${id}?fields=id,version,trashed`,{},i)).json();}
+  catch(e){if(e.type==='http'&&e.status===404)return null;throw e;}}
+async function dRead(id,i){return (await gfetch(`${GAPI}/files/${id}?alt=media`,{},i)).text();}
+async function dCreate(i){return (await gfetch(`${GAPI}/files?fields=id,version`,{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({name:GFILE,mimeType:'application/json',description:'Données SS Local - ne pas modifier ni déplacer'})},i)).json();}
+async function dCopy(id,name,i){try{await gfetch(`${GAPI}/files/${id}/copy?fields=id`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})},i);}catch(e){}}
+async function dWrite(id,text,i){
+  const size=new Blob([text]).size;
+  if(size<4.5e6)return (await gfetch(`${GUPL}/files/${id}?uploadType=media&fields=id,version`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:text},i)).json();
+  const r0=await gfetch(`${GUPL}/files/${id}?uploadType=resumable&fields=id,version`,{method:'PATCH',
+    headers:{'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':'application/json','X-Upload-Content-Length':String(size)},body:'{}'},i);
+  const loc=r0.headers.get('Location');if(!loc)throw {type:'http',status:0,detail:'upload'};
+  return (await gfetch(loc,{method:'PUT',headers:{'Content-Type':'application/json'},body:text},i)).json();
+}
+async function syPush(i){syDirty=false;try{const f=await dWrite(SY.fileId,JSON.stringify(forDrive(db)),i);SY.version=String(f.version);}catch(e){syDirty=true;throw e;}}
+function syRefreshUI(){const t=document.querySelector('nav button.active');if(t)showTab(t.dataset.tab);}
+
+/* ---- Cycle de synchro : lire Drive si modifie -> fusionner -> envoyer si besoin ---- */
+async function syncNow(interactive=false){
+  if(!SY.linked)return;
+  if(syBusy){syAgain=true;return;}
+  if(!navigator.onLine){setSy('offline');return;}
+  if(!interactive&&!tokenValid()){setSy('auth');return;}
+  syBusy=true;setSy('busy');
+  try{
+    let meta=SY.fileId?await dMeta(SY.fileId,interactive):null;
+    if(meta&&meta.trashed)meta=null;
+    if(!meta){meta=await dFind(interactive);if(meta){SY.fileId=meta.id;SY.version=null;}}
+    if(!meta){const f=await dCreate(interactive);SY.fileId=f.id;await syPush(interactive);}   /* fichier supprime : on le recree */
+    else{
+      if(String(meta.version)!==String(SY.version)){
+        const txt=await dRead(SY.fileId,interactive);let R=null;try{R=JSON.parse(txt);}catch(e){}
+        if(R&&Array.isArray(R.products)){
+          R=migrate(R);const rc=canon(forDrive(R)),before=canon(db);
+          const M=mergeDB(db,R);                           /* synchrone : aucune vente ne peut etre perdue pendant la fusion */
+          if(canon(M)!==before){db=M;storeDb();syRefreshUI();}
+          if(canon(forDrive(M))!==rc)syDirty=true;
+          SY.version=String(meta.version);
+        }else syDirty=true;
+      }
+      if(syDirty)await syPush(interactive);
+    }
+    SY.lastSync=Date.now();syPersist();setSy('ok');
+  }catch(e){setSy(e.type==='offline'?'offline':e.type==='auth'?'auth':'err',e);}
+  finally{syBusy=false;if(syAgain){syAgain=false;syncSoon(800);}}
+}
+function syncSoon(ms=3000){if(!SY.linked)return;clearTimeout(syTimer);syTimer=setTimeout(()=>syncNow(false),ms);}
+
+/* ---- Premiere connexion d'un appareil ---- */
+function syChoice(onDrive,onLocal){
+  const m=$('#appModal'),y=$('#amYes');$('#amIcon').textContent='☁️';$('#amTitle').textContent='Des données existent déjà sur Google Drive';
+  $('#amBody').innerHTML=`<p class="mut" style="margin-top:0">Cet appareil contient aussi des données. Que voulez-vous faire ?</p>
+    <button class="b p" id="chDrive" style="width:100%;margin-bottom:4px">⬇️ Utiliser les données du Drive</button>
+    <div class="mut" style="margin-bottom:12px">Recommandé si un autre appareil est déjà synchronisé. Les données de cet appareil sont remplacées.</div>
+    <button class="b r" id="chLocal" style="width:100%;margin-bottom:4px">⬆️ Remplacer le Drive par cet appareil</button>
+    <div class="mut">Les données du Drive sont remplacées (une copie de sécurité est gardée sur le Drive).</div>`;
+  y.style.display='none';m.style.display='flex';
+  const close=()=>{m.style.display='none';y.style.display='';};
+  $('#amNo').onclick=()=>{close();setSy('off');toast('Connexion annulée','warn');};
+  m.onclick=e=>{if(e.target===m){close();setSy('off');}};
+  $('#chDrive').onclick=()=>{close();onDrive();};
+  $('#chLocal').onclick=()=>{close();appConfirm({icon:'⚠️',title:'Remplacer les données du Drive ?',yes:'Remplacer le Drive',yesCls:'r',
+    body:'<div class="warn">Les données actuellement sur Google Drive seront remplacées par celles de cet appareil. Une copie de sécurité sera gardée sur le Drive.</div>'},onLocal);};
+}
+async function syncConnect(){
+  if(!navigator.onLine)return toast('Connexion Internet requise','err');
+  syBusy=true;setSy('busy');
+  try{
+    await getToken();
+    const ab=await (await gfetch(`${GAPI}/about?fields=user(emailAddress)`,{},true)).json();
+    SY.email=(ab.user&&ab.user.emailAddress)||SY.email;
+    if(SY.linked){syPersist();syBusy=false;return syncNow(true);}             /* simple reconnexion */
+    const f=await dFind(true),hasLocal=db.products.length||db.sales.length||db.orders.length;
+    const finish=msg=>{SY.linked=true;SY.lastSync=Date.now();syPersist();setSy('ok');syRefreshUI();toast(msg);};
+    const pull=async()=>{setSy('busy');try{
+        if(hasLocal&&store.ok)await store.set('backup-avant-synchro',JSON.stringify(db));
+        const txt=await dRead(f.id,true);let R=migrate(JSON.parse(txt));
+        const keep={};LOCAL_ONLY.forEach(k=>keep[k]=db.settings[k]);db=R;LOCAL_ONLY.forEach(k=>{if(keep[k]!==undefined)db.settings[k]=keep[k];});
+        SY.fileId=f.id;SY.version=String((await dMeta(f.id,true)).version);storeDb();cart=[];finish('Données du Drive récupérées ✅');
+      }catch(e){setSy(e.type==='offline'?'offline':e.type==='auth'?'auth':'err',e);toast(e.type==='offline'?'Pas de connexion Internet':'Erreur Google Drive, réessayez','err');}};
+    const push=async()=>{setSy('busy');try{
+        if(f){await dCopy(f.id,'SSLocal-data-copie-'+today()+'.json',true);SY.fileId=f.id;db.gen='g'+uid();db.genTs=Date.now();storeDb();}
+        else SY.fileId=(await dCreate(true)).id;
+        await syPush(true);finish(f?'Drive remplacé par cet appareil ✅':'Synchronisation activée ✅');
+      }catch(e){setSy(e.type==='offline'?'offline':e.type==='auth'?'auth':'err',e);toast(e.type==='offline'?'Pas de connexion Internet':'Erreur Google Drive, réessayez','err');}};
+    syBusy=false;
+    if(!f)await push();else if(!hasLocal)await pull();else{setSy('off');syChoice(pull,push);}
+  }catch(e){syBusy=false;setSy(e.type==='offline'?'offline':e.type==='auth'?'off':'err',e);
+    toast(e.type==='auth'?'Connexion Google annulée ou refusée':e.type==='offline'?'Pas de connexion Internet':'Erreur Google Drive','err');}
+  finally{syBusy=false;}
+}
+function syncConnectOrNow(){if(!tokenValid())syncConnect();else syncNow(true);}
+function syPillClick(){if(syState==='auth'||syState==='err')syncConnectOrNow();else showTab('params');}
+function syncDisconnect(){
+  appConfirm({icon:'☁️',title:'Déconnecter Google Drive ?',yes:'Se déconnecter',yesCls:'r',
+    body:'<div class="info">Les données restent sur cet appareil et sur le Drive. Cet appareil ne sera simplement plus synchronisé.</div>'},()=>{
+    try{if(SY.token&&window.google)google.accounts.oauth2.revoke(SY.token,()=>{});}catch(e){}
+    SY={linked:false,fileId:null,version:null,email:'',lastSync:0,token:null,exp:0};syPersist();setSy('off');toast('Synchronisation désactivée','warn');});
+}
+/* ---- Affichage de l'etat ---- */
+function ago(t){if(!t)return 'jamais';const s=Math.round((Date.now()-t)/1000);if(s<60)return "à l'instant";if(s<3600)return 'il y a '+Math.round(s/60)+' min';return fmtDate(t);}
+function setSy(st,e){
+  syState=SY.linked?st:(st==='busy'?'busy':'off');
+  if(e)syErrMsg=e.type==='http'?`Erreur Google (${e.status})`:'';
+  const p=$('#syncPill');
+  const txt={ok:'☁️ Synchronisé · '+ago(SY.lastSync),busy:'⏳ Synchronisation…',offline:"📴 Hors ligne · tout est gardé sur l'appareil",
+    auth:'🔑 Toucher pour reconnecter Google',err:'⚠️ '+(syErrMsg||'Erreur de synchro')+' · toucher pour réessayer'}[syState];
+  p.hidden=!txt||(!SY.linked&&syState!=='busy');p.className=syState;p.textContent=txt||'';
+  if(!$('#tab-params').hidden)syRender();
+}
+function syRender(){
+  const on=SY.linked;
+  $('#syncInfo').innerHTML=on?`Connecté : <b>${esc(SY.email||'compte Google')}</b> · fichier <b>${GFILE}</b> sur votre Google Drive<br>Dernière synchro : <b>${ago(SY.lastSync)}</b>${syState==='auth'?' · <b style="color:#b91c1c">reconnexion requise</b>':''}${syDirty&&on?' · modifications en attente d\'envoi':''}`
+    :`Non connecté. Connectez le <b>compte Google de la boutique</b> pour que tous vos appareils (ordinateur, téléphone, tablette) partagent les mêmes données.`;
+  $('#syncLogin').hidden=on;$('#syncNowBtn').hidden=!on;$('#syncOut').hidden=!on;
+}
+setInterval(()=>{if(SY.linked&&document.visibilityState==='visible')syncNow(false);},90000);
+setInterval(()=>{if(syState==='ok')setSy('ok');},30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncSoon(600);});
+window.addEventListener('online',()=>syncSoon(600));
+window.addEventListener('offline',()=>{if(SY.linked)setSy('offline');});
 if(bc)bc.onmessage=async()=>{const r=await load();db=r.d;showTab(document.querySelector('nav button.active').dataset.tab);};
 
 (async function init(){
@@ -973,6 +1172,8 @@ if(bc)bc.onmessage=async()=>{const r=await load();db=r.d;showTab(document.queryS
   if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
   $('#storeBanner').hidden=store.ok;
   showTab(db.products.length?'caisse':'produits');
+  if(store.ok){try{const sv=await store.get('sync');if(sv)SY=Object.assign(SY,JSON.parse(sv));}catch(e){}}
+  if(SY.linked){setSy(tokenValid()?'ok':'auth');syncSoon(500);}
   if('serviceWorker' in navigator&&location.protocol.startsWith('http')){
     try{const reg=await navigator.serviceWorker.register('sw.js');
       const watch=w=>{if(!w)return;w.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller)$('#updBanner').hidden=false;});};
