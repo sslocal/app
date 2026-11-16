@@ -1,7 +1,7 @@
 /* SS Local - Copyright (c) 2026 Serigne Saliou Mbacke Thiam (SSMT). Tous droits reserves. Voir LICENSE. */
 /* SS Local - fonctionnement hors ligne. Changer VERSION a chaque mise a jour de l'app. */
-const VERSION='sslocal-v13';
-const ASSETS=['./','./index.html','./manifest.webmanifest','./icons/icon-180.png','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-maskable-512.png'];
+const VERSION='sslocal-v14d';
+const ASSETS=['./','./index.html','./manifest.webmanifest','./icons/app-32.png','./icons/app-180.png','./icons/app-192.png','./icons/app-512.png','./icons/app-maskable-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(VERSION).then(c=>c.addAll(ASSETS))));
 self.addEventListener('activate',e=>e.waitUntil(
   caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==VERSION).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
